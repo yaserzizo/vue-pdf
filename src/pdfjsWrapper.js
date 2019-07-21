@@ -77,10 +77,14 @@ export default function(PDFJS) {
 			var CSS_UNITS = 96.0 / 72.0;
 
 			var iframeElt = document.createElement('iframe');
+			var tempElt = document.createElement('div');
+			tempElt.style.cssText = 'display: none';
+			window.document.body.appendChild(tempElt);
 
 			function removeIframe() {
 
 				iframeElt.parentNode.removeChild(iframeElt);
+				tempElt.parentNode.removeChild(tempElt);
 			}
 
 			new Promise(function(resolve, reject) {
@@ -98,81 +102,89 @@ export default function(PDFJS) {
 
 				window.document.body.appendChild(iframeElt);
 			})
-			.then(function(win) {
+				.then(function(win) {
 
-				win.document.title = '';
+					win.document.title = '';
 
-				return pdfDoc.getPage(1)
-				.then(function(page) {
-
-					var viewport = page.getViewport(1);
-					win.document.head.appendChild(win.document.createElement('style')).textContent =
-						'@supports ((size:A4) and (size:1pt 1pt)) {' +
-							'@page { margin: 1pt; size: ' + ((viewport.width * PRINT_UNITS) / CSS_UNITS) + 'pt ' + ((viewport.height * PRINT_UNITS) / CSS_UNITS) + 'pt; }' +
-						'}' +
-
-						'@media print {' +
-							'body { margin: 0 }' +
-							'canvas { page-break-before: avoid; page-break-after: always; page-break-inside: avoid }' +
-						'}'+
-
-						'@media screen {' +
-							'body { margin: 0 }' +
-						'}'+
-
-						''
-					return win;
-				})
-			})
-			.then(function(win) {
-
-				var allPages = [];
-
-				for ( var pageNumber = 1; pageNumber <= pdfDoc.numPages; ++pageNumber ) {
-
-					if ( pageNumberOnly !== undefined && pageNumberOnly.indexOf(pageNumber) === -1 )
-						continue;
-
-					allPages.push(
-						pdfDoc.getPage(pageNumber)
+					return pdfDoc.getPage(1)
 						.then(function(page) {
 
 							var viewport = page.getViewport(1);
+							win.document.head.appendChild(win.document.createElement('style')).textContent =
+								'@supports ((size:A4) and (size:1pt 1pt)) {' +
+								'@page { size: ' + ((viewport.width * PRINT_UNITS) / CSS_UNITS) + 'pt ' + ((viewport.height * PRINT_UNITS) / CSS_UNITS) + 'pt; }' +
+								'}'+
+								'@media print {' +
+								'body { margin: 0 }' +
+								'canvas { page-break-before: avoid; page-break-after: always; page-break-inside: avoid }' +
+								'}'+
 
-							var printCanvasElt = win.document.body.appendChild(win.document.createElement('canvas'));
-							printCanvasElt.width = (viewport.width * PRINT_UNITS);
-							printCanvasElt.height = (viewport.height * PRINT_UNITS);
+								'@media screen {' +
+								'body { margin: 0 }' +
+								'}'+
 
-							return page.render({
-								canvasContext: printCanvasElt.getContext('2d'),
-								transform: [ // Additional transform, applied just before viewport transform.
-									PRINT_UNITS, 0, 0,
-									PRINT_UNITS, 0, 0
-								],
-								viewport: viewport,
-								intent: 'print'
-							}).promise;
+								''
+							return win;
 						})
-					);
-				}
-
-				Promise.all(allPages)
-				.then(function() {
-
-					win.focus(); // Required for IE
-					if (win.document.queryCommandSupported('print')) {
-						win.document.execCommand('print', false, null);
-						} else {
-						win.print();
-					  }
-					removeIframe();
 				})
-				.catch(function(err) {
+				.then(function(win) {
 
-					removeIframe();
-					emitEvent('error', err);
+					var allPages = [];
+
+					for ( var pageNumber = 1; pageNumber <= pdfDoc.numPages; ++pageNumber ) {
+
+						if ( pageNumberOnly !== undefined && pageNumberOnly.indexOf(pageNumber) === -1 )
+							continue;
+
+						allPages.push(
+							pdfDoc.getPage(pageNumber)
+								.then(function(page) {
+
+									var viewport = page.getViewport(1);
+
+									var printCanvasElt = tempElt.appendChild(document.createElement('canvas'));
+									printCanvasElt.width = (viewport.width * PRINT_UNITS);
+									printCanvasElt.height = (viewport.height * PRINT_UNITS);
+
+									return page.render({
+										canvasContext: printCanvasElt.getContext('2d'),
+										transform: [ // Additional transform, applied just before viewport transform.
+											PRINT_UNITS, 0, 0,
+											PRINT_UNITS, 0, 0
+										],
+										viewport: viewport,
+										intent: 'print'
+									}).promise;
+								})
+						);
+					}
+
+					Promise.all(allPages)
+						.then(function() {
+							for (var i = 0; i < tempElt.children.length; ++i) {
+								var child = tempElt.children[i];
+								var canvas = child.cloneNode(true);
+
+								var ctx = canvas.getContext('2d');
+								ctx.drawImage(child, 0, 0);
+
+								win.document.body.appendChild(canvas);
+							}
+
+							win.focus(); // Required for IE
+							if (win.document.queryCommandSupported('print')) {
+								win.document.execCommand('print', false, null);
+							} else {
+								win.print();
+							}
+							removeIframe();
+						})
+						.catch(function(err) {
+
+							removeIframe();
+							emitEvent('error', err);
+						})
 				})
-			})
 		}
 
 		this.renderPage = function(rotate) {
@@ -188,7 +200,8 @@ export default function(PDFJS) {
 			if ( pdfPage === null )
 				return;
 
-			rotate = (pdfPage.rotate === undefined ? 0 : pdfPage.rotate) + (rotate === undefined ? 0 : rotate);
+			if ( rotate === undefined )
+				rotate = pdfPage.rotate;
 
 			var scale = canvasElt.offsetWidth / pdfPage.getViewport(1).width * (window.devicePixelRatio || 1);
 			var viewport = pdfPage.getViewport(scale, rotate);
@@ -217,35 +230,35 @@ export default function(PDFJS) {
 			linkService.setViewer(viewer);
 
 			pdfPage.getAnnotations({ intent: 'display' })
-			.then(function(annotations) {
+				.then(function(annotations) {
 
-				PDFJS.AnnotationLayer.render({
-					viewport: viewport.clone({ dontFlip: true }),
-					div: annotationLayerElt,
-					annotations: annotations,
-					page: pdfPage,
-					linkService: linkService,
-					renderInteractiveForms: false
+					PDFJS.AnnotationLayer.render({
+						viewport: viewport.clone({ dontFlip: true }),
+						div: annotationLayerElt,
+						annotations: annotations,
+						page: pdfPage,
+						linkService: linkService,
+						renderInteractiveForms: false
+					});
 				});
-			});
 
 			pdfRender
-			.then(function() {
-				annotationLayerElt.style.visibility = '';
-				canceling = false;
-				pdfRender = null;
-			})
-			.catch(function(err) {
-
-				pdfRender = null;
-				if ( err instanceof PDFJS.RenderingCancelledException ) {
-
+				.then(function() {
+					annotationLayerElt.style.visibility = '';
 					canceling = false;
-					this.renderPage(rotate);
-					return;
-				}
-				emitEvent('error', err);
-			}.bind(this))
+					pdfRender = null;
+				})
+				.catch(function(err) {
+
+					pdfRender = null;
+					if ( err instanceof PDFJS.RenderingCancelledException ) {
+
+						canceling = false;
+						this.renderPage(rotate);
+						return;
+					}
+					emitEvent('error', err);
+				}.bind(this))
 		}
 
 
@@ -256,12 +269,12 @@ export default function(PDFJS) {
 			(function next(pageNum) {
 
 				pdfDoc.getPage(pageNum)
-				.then(pageCallback)
-				.then(function() {
+					.then(pageCallback)
+					.then(function() {
 
-					if ( ++pageNum <= numPages )
-						next(pageNum);
-				})
+						if ( ++pageNum <= numPages )
+							next(pageNum);
+					})
 			})(1);
 		}
 
@@ -274,18 +287,18 @@ export default function(PDFJS) {
 				return;
 
 			pdfDoc.getPage(pageNumber)
-			.then(function(page) {
+				.then(function(page) {
 
-				pdfPage = page;
-				this.renderPage(rotate);
-				emitEvent('page-loaded', page.pageNumber);
-			}.bind(this))
-			.catch(function(err) {
+					pdfPage = page;
+					this.renderPage(rotate);
+					emitEvent('page-loaded', page.pageNumber);
+				}.bind(this))
+				.catch(function(err) {
 
-				clearCanvas();
-				clearAnnotations();
-				emitEvent('error', err);
-			});
+					clearCanvas();
+					clearAnnotations();
+					emitEvent('error', err);
+				});
 		}
 
 		this.loadDocument = function(src) {
@@ -337,18 +350,18 @@ export default function(PDFJS) {
 			}
 
 			loadingTask
-			.then(function(pdf) {
+				.then(function(pdf) {
 
-				pdfDoc = pdf;
-				emitEvent('num-pages', pdf.numPages);
-				emitEvent('loaded');
-			})
-			.catch(function(err) {
+					pdfDoc = pdf;
+					emitEvent('num-pages', pdf.numPages);
+					emitEvent('loaded');
+				})
+				.catch(function(err) {
 
-				clearCanvas();
-				clearAnnotations();
-				emitEvent('error', err);
-			})
+					clearCanvas();
+					clearAnnotations();
+					emitEvent('error', err);
+				})
 		}
 
 		annotationLayerElt.style.transformOrigin = '0 0';
